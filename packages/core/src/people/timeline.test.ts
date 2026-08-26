@@ -6,6 +6,7 @@ import {
   type TimelineEntry,
 } from "@rome/api-types/people";
 import { readPersonTimeline, type TimelineAccount, type TimelineSource } from "./timeline.js";
+import { readPeopleActivity } from "./activity.js";
 
 // The merge above the stores: what a page is, how it resumes, and which store
 // owns an account. Every source here is a fake, so nothing below is about SQL —
@@ -38,6 +39,19 @@ function fakeSource(
     calls,
     async holds(accounts) {
       return accounts.filter((a) => a.addresses.some((address) => addressesHeld.has(address)));
+    },
+    async digest(accounts) {
+      return accounts.flatMap((a) => {
+        const entries = a.addresses.flatMap((address) => held[address] ?? []);
+        if (entries.length === 0) return [];
+        return [
+          {
+            account: a,
+            latest: [...entries].sort(compareTimelineEntries)[0],
+            messageCount: entries.length,
+          },
+        ];
+      });
     },
     async read(request) {
       calls.push(name);
@@ -155,5 +169,55 @@ describe("readPersonTimeline", () => {
   it("answers an empty page for a person with no accounts", async () => {
     const page = await readPersonTimeline([whatsapp, telegram], [], { limit: 10 });
     expect(page).toEqual({ entries: [], nextCursor: null });
+  });
+});
+
+// The same precedence, read as a summary instead of a page: what a directory
+// row shows for a person without opening their dossier.
+describe("readPeopleActivity", () => {
+  const waAccount = account("whatsapp", "wa-1");
+  const tgAccount = account("telegram", "tg-1");
+
+  it("summarizes each account from the first store that claims it", async () => {
+    // One exchange written down twice, as the real stores overlap. Counting
+    // both would report an inbox the dossier does not have.
+    const mirror = fakeSource("mirror", { "wa-1": [entry("whatsapp", 500, "mirrored")] });
+    const transcript = fakeSource("transcript", {
+      "wa-1": [entry("whatsapp", 500, "copy"), entry("whatsapp", 200, "older copy")],
+      "tg-1": [entry("telegram", 400, "typed")],
+    });
+
+    const [whatsapp, telegram] = await readPeopleActivity(
+      [mirror, transcript],
+      [[waAccount], [tgAccount]],
+    );
+    expect(whatsapp).toEqual({
+      messageCount: 1,
+      latest: { source: "whatsapp", timestamp: 500, preview: "mirrored@500" },
+    });
+    expect(telegram.messageCount).toBe(1);
+  });
+
+  it("folds a person's accounts into one history", async () => {
+    const store = fakeSource("store", {
+      "wa-1": [entry("whatsapp", 300, "wa:c"), entry("whatsapp", 100, "wa:a")],
+      "tg-1": [entry("telegram", 400, "tg:d")],
+    });
+
+    const [both] = await readPeopleActivity([store], [[waAccount, tgAccount]]);
+    expect(both).toEqual({
+      messageCount: 3,
+      // The head of the merged timeline, not of whichever account came first.
+      latest: { source: "telegram", timestamp: 400, preview: "tg:d@400" },
+    });
+  });
+
+  it("answers one activity per group, in the order given", async () => {
+    const store = fakeSource("store", { "tg-1": [entry("telegram", 400, "tg:d")] });
+    expect(await readPeopleActivity([store], [[waAccount], [], [tgAccount]])).toEqual([
+      { latest: null, messageCount: 0 },
+      { latest: null, messageCount: 0 },
+      { latest: { source: "telegram", timestamp: 400, preview: "tg:d@400" }, messageCount: 1 },
+    ]);
   });
 });

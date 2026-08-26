@@ -162,33 +162,14 @@ export class PersonMappingRepository {
     return results;
   }
 
-  async findAll() {
-    const rows = await this.db.select().from(persons);
-
-    const results = [];
-    for (const person of rows) {
-      const mappings = await this.db
-        .select()
-        .from(channelMappings)
-        .where(eq(channelMappings.personId, person.id));
-      results.push({
-        ...person,
-        channelMappings: mappings.map((m) => ({
-          channel: m.channel,
-          channelUserId: m.channelUserId,
-        })),
-      });
-    }
-    return results;
-  }
-
   /**
    * Every person with their channel mappings, read as one statement.
    *
-   * One snapshot, unlike {@link findAll}: a mapping moving between two people
-   * mid-read would otherwise land under both of them (or neither), because
-   * each person's mappings arrive in their own autocommit query. The identity
-   * union's whole premise is that an identity has one owner, so it reads this.
+   * One statement rather than one per person, and not only to save the reads:
+   * a mapping moving between two people mid-read would otherwise land under
+   * both of them (or neither), because each person's mappings would arrive in
+   * their own autocommit query. Every reader of this table assumes an identity
+   * has one owner.
    */
   async findAllWithMappings() {
     const rows = await this.db

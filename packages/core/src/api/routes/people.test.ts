@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
-import type { TimelinePage } from "@rome/api-types/people";
+import { sql } from "drizzle-orm";
+import {
+  latestDynamic,
+  type PeopleList,
+  type PersonResource,
+  type TimelinePage,
+} from "@rome/api-types/people";
 import { peopleRoutes } from "./people.js";
 import { createTestDb, buildTestDeps, type TestDb, type TestDeps } from "../../test/helpers.js";
 import { seedBaseline, type BaselineIds } from "../../test/seeds.js";
@@ -470,4 +476,282 @@ describe("People timeline API", () => {
     });
     expect(await fetchTimeline(unreachable)).toEqual({ entries: [], nextCursor: null });
   });
+});
+
+// GET /people and GET /people/:id — the curated people, their accounts as each
+// platform names them, and the activity a row shows without opening the
+// dossier. What the numbers count is the point of most of these: a person's
+// history is written down in several overlapping stores, so a row that adds
+// them up reports an inbox nobody has.
+
+describe("People API", () => {
+  const NADIA_JID = "15550001111@s.whatsapp.net";
+  const NADIA_LID = "77771111@lid";
+
+  let testDb: TestDb;
+  let deps: TestDeps;
+  let app: Hono;
+  let baseline: BaselineIds;
+  let nadiaId: string;
+
+  beforeEach(async () => {
+    testDb = createTestDb();
+    baseline = await seedBaseline(testDb.db);
+    deps = await buildTestDeps(testDb.db);
+    app = new Hono().route("/", peopleRoutes(deps));
+
+    // One WhatsApp account reachable two ways, which the mirror folds onto the
+    // phone JID, and a person mapped under both of them.
+    await deps.whatsAppStoreRepo.upsertContacts([
+      { jid: NADIA_JID, phoneNumber: "15550001111", name: "Nadia Cross" },
+      { jid: NADIA_LID, phoneNumber: "15550001111", notify: "Nadia" },
+    ]);
+    await deps.whatsAppStoreRepo.upsertMessages([
+      {
+        id: "wa-n1",
+        chatJid: NADIA_JID,
+        senderJid: NADIA_JID,
+        fromMe: false,
+        timestamp: at("2026-08-10T09:00:00Z"),
+        type: "text",
+        text: "are we still on for friday",
+        hasMedia: false,
+      },
+      {
+        id: "wa-n2",
+        chatJid: NADIA_JID,
+        senderJid: NADIA_JID,
+        fromMe: true,
+        timestamp: at("2026-08-10T09:05:00Z"),
+        type: "text",
+        text: "yes — 7pm",
+        hasMedia: false,
+      },
+      {
+        id: "wa-n-react",
+        chatJid: NADIA_JID,
+        senderJid: NADIA_JID,
+        fromMe: false,
+        timestamp: at("2026-08-10T09:06:00Z"),
+        type: "reaction",
+        text: "👍",
+        hasMedia: false,
+        reactsToId: "wa-n2",
+      },
+      {
+        id: "wa-n-group",
+        chatJid: "120363000000000011@g.us",
+        senderJid: NADIA_JID,
+        fromMe: false,
+        timestamp: at("2026-08-11T10:00:00Z"),
+        type: "text",
+        text: "posted in the group",
+        hasMedia: false,
+      },
+    ]);
+
+    nadiaId = await deps.personMappingRepo.create({
+      displayName: "Nadia Cross",
+      bondLevel: "acquaintance",
+      approved: true,
+      channelMappings: [
+        { channel: "whatsapp", channelUserId: NADIA_JID },
+        { channel: "whatsapp", channelUserId: NADIA_LID },
+      ],
+    });
+  });
+
+  afterEach(() => testDb.close());
+
+  async function fetchList(query = ""): Promise<PeopleList> {
+    const res = await app.request(`/people${query}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as PeopleList;
+  }
+
+  async function fetchPerson(id: string): Promise<PersonResource> {
+    const res = await app.request(`/people/${id}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as PersonResource;
+  }
+
+  it("lists every curated person with their accounts, and never the sentinel", async () => {
+    const { people } = await fetchList();
+    const ids = people.map((person) => person.id);
+
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        baseline.persons.guardianId,
+        baseline.persons.innerCircleId,
+        baseline.persons.acquaintanceId,
+        baseline.persons.otherId,
+        nadiaId,
+      ]),
+    );
+    // The sentinel is the row dismissed accounts are linked to, not someone
+    // the guardian knows.
+    expect(ids).not.toContain(STRANGER_PERSON_ID);
+
+    const alice = people.find((person) => person.id === baseline.persons.innerCircleId);
+    expect(alice?.accounts).toEqual([
+      // Telegram mirrors no address book, so the name is the one the sender put
+      // on their own messages — the directory seam's second fallback.
+      { channel: "telegram", channelUserId: "tg-alice", displayName: "Alice Inner" },
+    ]);
+
+    const carol = people.find((person) => person.id === baseline.persons.otherId);
+    // Nothing has ever named this account, so it is rendered as its identifier
+    // rather than as an empty string.
+    expect(carol?.accounts).toEqual([
+      { channel: "whatsapp", channelUserId: "wa-carol", displayName: "wa-carol" },
+    ]);
+  });
+
+  it("names an account as its platform does, over every addressing of it", async () => {
+    const nadia = await fetchPerson(nadiaId);
+    // One account, two mappings: a client addresses the link it stored, and
+    // both carry the mirror's name for the account rather than the raw jid.
+    expect(nadia.accounts).toEqual([
+      { channel: "whatsapp", channelUserId: NADIA_JID, displayName: "Nadia Cross" },
+      { channel: "whatsapp", channelUserId: NADIA_LID, displayName: "Nadia Cross" },
+    ]);
+  });
+
+  it("answers 404 for the stranger sentinel and for an id naming no person", async () => {
+    expect((await app.request(`/people/${STRANGER_PERSON_ID}`)).status).toBe(404);
+    expect((await app.request("/people/nobody-here")).status).toBe(404);
+    expect(baseline.persons.strangerId).toBe(STRANGER_PERSON_ID);
+  });
+
+  it("keeps a stored bond level the ladder does not name, and counts it as other", async () => {
+    // Older rows carry levels outside today's enum. Rewriting one on the way
+    // out would make a person's own level unreadable.
+    await testDb.db.run(
+      sql`UPDATE persons SET bond_level = 'colleague' WHERE id = ${baseline.persons.otherId}`,
+    );
+
+    expect((await fetchPerson(baseline.persons.otherId)).bondLevel).toBe("colleague");
+
+    const filtered = await fetchList("?level=other");
+    expect(filtered.people.map((person) => person.id)).toContain(baseline.persons.otherId);
+  });
+
+  it("counts the whole match rather than the rows it returned", async () => {
+    const whole = await fetchList();
+    const narrowed = await fetchList("?level=inner-circle");
+
+    expect(narrowed.people.map((person) => person.id)).toEqual([baseline.persons.innerCircleId]);
+    // The chips are how the guardian leaves the level they are on, so every
+    // number stays true while one of them is selected.
+    expect(narrowed.counts).toEqual(whole.counts);
+    expect(whole.counts.guardian).toBe(1);
+    expect(whole.counts["inner-circle"]).toBe(1);
+    expect(whole.counts.acquaintance).toBe(2);
+    expect(whole.counts.other).toBe(1);
+    expect(whole.counts.all).toBe(5);
+  });
+
+  it("narrows the match with ?q=, including by an account's identifier", async () => {
+    const byName = await fetchList("?q=nadia");
+    expect(byName.people.map((person) => person.id)).toEqual([nadiaId]);
+    expect(byName.counts.all).toBe(1);
+    expect(byName.counts.acquaintance).toBe(1);
+
+    // A guardian searches with what they have — the phone number they were
+    // given, not the name Rome saved.
+    const byNumber = await fetchList("?q=15550001111");
+    expect(byNumber.people.map((person) => person.id)).toEqual([nadiaId]);
+  });
+
+  it("refuses a level that names no view", async () => {
+    const res = await app.request("/people?level=colleague");
+    expect(res.status).toBe(400);
+  });
+
+  it("previews the head of the person's own timeline and counts its entries", async () => {
+    const { people } = await fetchList();
+
+    for (const person of people) {
+      const timeline = (await fetchTimelineFor(person.id)).entries;
+      expect(person.latest).toEqual(latestDynamic(timeline));
+      expect(person.messageCount).toBe(timeline.length);
+    }
+  });
+
+  it("counts one account's history once, whatever it is addressed by", async () => {
+    const nadia = await fetchPerson(nadiaId);
+    // Two mappings onto one mirrored account, and one conversation on it: the
+    // reaction and the group message are not entries, and the two addressings
+    // are not two histories.
+    expect(nadia.messageCount).toBe(2);
+    expect(nadia.latest).toEqual({
+      source: "whatsapp",
+      timestamp: Math.floor(at("2026-08-10T09:05:00Z").getTime() / 1000),
+      preview: "yes — 7pm",
+    });
+  });
+
+  it("counts one exchange once when three stores wrote it down", async () => {
+    // The mirror, Rome's own transcript of the channel session, and the
+    // sentinel that triaged it all hold the same WhatsApp message. Adding them
+    // would treble the number beside her name.
+    const conversation = await deps.webchatRepo.ensureChannelConversation({
+      channel: "whatsapp",
+      threadId: NADIA_JID,
+      threadType: "private",
+      agentName: "main",
+    });
+    await deps.webchatRepo.addConversationMessage({
+      sessionId: conversation.id,
+      role: "notification",
+      content: JSON.stringify([{ type: "text", content: "as the transcript has it" }]),
+      platformMessageId: "wa-n1",
+      senderId: NADIA_JID,
+      createdAt: at("2026-08-10T09:00:02Z"),
+    });
+    await deps.sentinelLogRepo.create({
+      messageId: "wa-n1",
+      channel: "whatsapp",
+      channelUserId: NADIA_JID,
+      threadId: NADIA_JID,
+      text: "as the sentinel logged it",
+      action: "replied",
+      response: "as the sentinel answered it",
+    });
+
+    expect((await fetchPerson(nadiaId)).messageCount).toBe(2);
+  });
+
+  it("orders by newest activity, with people who have said nothing last", async () => {
+    const { people } = await fetchList();
+    const silent = people.filter((person) => person.latest === null).map((person) => person.id);
+    const spoken = people.filter((person) => person.latest !== null);
+
+    expect(spoken.map((person) => person.latest?.timestamp)).toEqual(
+      [...spoken.map((person) => person.latest?.timestamp ?? 0)].sort((a, b) => b - a),
+    );
+    expect(people.slice(people.length - silent.length).map((person) => person.id)).toEqual(silent);
+    // The seed has both kinds, so the two assertions above are not vacuous.
+    expect(spoken.length).toBeGreaterThan(1);
+    expect(silent.length).toBeGreaterThan(0);
+  });
+
+  it("answers a person with no accounts as one with no history", async () => {
+    const unreachable = await deps.personMappingRepo.create({
+      displayName: "No Channels",
+      bondLevel: "other",
+      approved: true,
+      channelMappings: [],
+    });
+    const person = await fetchPerson(unreachable);
+    expect(person.accounts).toEqual([]);
+    expect(person.messageCount).toBe(0);
+    expect(person.latest).toBeNull();
+  });
+
+  async function fetchTimelineFor(id: string): Promise<TimelinePage> {
+    const res = await app.request(`/people/${id}/messages?limit=300`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as TimelinePage;
+  }
 });

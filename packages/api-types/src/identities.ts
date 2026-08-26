@@ -67,15 +67,20 @@ export function isAssignableBondLevel(value: unknown): value is AssignableBondLe
   return ASSIGNABLE_BOND_LEVELS.includes(value as AssignableBondLevel);
 }
 
+/** A level a person row can actually hold: the ladder minus its two computed
+ *  positions. "unknown" is an identity with no person row and "stranger" is a
+ *  link onto the sentinel, so neither is ever stored on a person. */
+export type PlacedBondLevel = Exclude<BondLadderLevel, "unknown" | "stranger">;
+
 /**
  * Bucket a stored `persons.bondLevel` onto the ladder. The column is free text
  * and older rows carry values outside today's enum (e.g. "colleague"), so
  * every reader has to agree on where those land rather than dropping the row
  * from every group.
  */
-export function normalizeBondLevel(raw: string): BondLadderLevel {
+export function normalizeBondLevel(raw: string): PlacedBondLevel {
   return (BOND_LADDER as readonly string[]).includes(raw) && raw !== "unknown" && raw !== "stranger"
-    ? (raw as BondLadderLevel)
+    ? (raw as PlacedBondLevel)
     : "other";
 }
 
@@ -293,15 +298,28 @@ export function identityMatchesLevel(row: IdentityRow, level: IdentityFilterLeve
     : row.level === level;
 }
 
-/** Parse a `?level=` value, or null when it names no view — an unknown filter
- *  is a client bug, and answering it as "all" would silently show the wrong
- *  rows. */
+/**
+ * Parse a `?level=` value against the levels a surface counts by, or null when
+ * it names no view — an unknown filter is a client bug, and answering it as
+ * "all" would silently show the wrong rows.
+ *
+ * Takes the ladder because the surfaces count by different ones: the union has
+ * a chip for every position, and a listing of curated people has none for the
+ * two positions no person row can hold.
+ */
+export function parseFilterLevel<L extends string>(
+  raw: string | undefined | null,
+  levels: readonly L[],
+): "all" | L | null {
+  if (raw == null || raw === "") return null;
+  if (raw === "all") return "all";
+  return (levels as readonly string[]).includes(raw) ? (raw as L) : null;
+}
+
 export function parseIdentityFilterLevel(
   raw: string | undefined | null,
 ): IdentityFilterLevel | null {
-  if (raw == null || raw === "") return null;
-  if (raw === "all") return "all";
-  return (BOND_LADDER as readonly string[]).includes(raw) ? (raw as BondLadderLevel) : null;
+  return parseFilterLevel(raw, BOND_LADDER);
 }
 
 /** How many identities one page carries when the caller names no limit, and
@@ -422,21 +440,29 @@ export function isAfterTimelineCursor(entry: TimelineEntry, cursor: TimelineEntr
   return compareTimelineEntries(cursor, entry) < 0;
 }
 
+/**
+ * Whether a search box's text is anywhere in what a row can be found by.
+ *
+ * The rule rather than the haystack: each surface knows which of its own
+ * fields are searchable, and every one of them has to normalize the same way
+ * or one typed string finds different rows on each.
+ *
+ * NFC first, the way the orderings normalize: a keyboard that composes "José"
+ * should find a row that stored it decomposed, and the reverse.
+ */
+export function matchesQuery(query: string, haystack: readonly string[]): boolean {
+  const q = query.normalize("NFC").trim().toLowerCase();
+  if (!q) return true;
+  return haystack.join(" ").normalize("NFC").toLowerCase().includes(q);
+}
+
 /** What `?q=` matches: the display name and every channel identifier, so a
  *  phone number or a handle finds a row the guardian named something else. */
 export function identityMatchesQuery(row: IdentityRow, query: string): boolean {
-  // NFC first, the way the orderings normalize: a keyboard that composes "José"
-  // should find a row that stored it decomposed, and the reverse.
-  const q = query.normalize("NFC").trim().toLowerCase();
-  if (!q) return true;
-  const haystack = [
+  return matchesQuery(query, [
     row.displayName,
     ...row.channels.flatMap((channel) => [channel.channel, channel.channelUserId]),
-  ]
-    .join(" ")
-    .normalize("NFC")
-    .toLowerCase();
-  return haystack.includes(q);
+  ]);
 }
 
 /**
@@ -452,7 +478,12 @@ export interface IdentityCursor {
   id: string;
 }
 
-export function identityCursorOf(row: IdentityRow): IdentityCursor {
+/** The ordering tuple, for any row that carries one. Widened past
+ *  {@link IdentityRow} so a second listing of the same rows orders through
+ *  {@link compareIdentityCursors} rather than restating it. */
+export function identityCursorOf(
+  row: Pick<IdentityRow, "id" | "displayName" | "latest">,
+): IdentityCursor {
   return { timestamp: row.latest?.timestamp ?? null, displayName: row.displayName, id: row.id };
 }
 

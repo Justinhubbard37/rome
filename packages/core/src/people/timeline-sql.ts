@@ -3,9 +3,9 @@
 // once, and this module pages, orders and scopes them.
 
 import { sql, type SQL } from "drizzle-orm";
-import type { TimelineEntry } from "@rome/api-types/people";
+import { compareTimelineEntries, type TimelineEntry } from "@rome/api-types/people";
 import type { DrizzleDb } from "../db/index.js";
-import type { TimelineAccount, TimelineSource, TimelineRead } from "./timeline.js";
+import type { AccountDigest, TimelineAccount, TimelineSource, TimelineRead } from "./timeline.js";
 
 /**
  * A store's rows as timeline entries: a SELECT producing exactly the columns
@@ -55,6 +55,63 @@ export function sqlTimelineSource(options: {
       );
     },
 
+    async digest(accounts) {
+      const rows = view(accounts);
+      if (rows === null) return [];
+      // The head of each address's timeline and its length, from one pass over
+      // the rows. One named window rather than two inline ones: SQLite shares a
+      // partition pass only between windows that are spelled the same, and two
+      // spellings sort the whole scoped history twice.
+      //
+      // The frame is explicit because the ORDER BY inside the window would
+      // otherwise make `count(*)` a running total — the length of the history
+      // above each row rather than the length of the history.
+      //
+      // That ORDER BY is `read`'s, so the row this picks is the one `read`
+      // would put first. No cursor and no limit: this is the whole history
+      // summarized, not a page of it.
+      const summaries = (await db.all(sql`
+        SELECT source, address, at, outbound, ref, body, entries
+        FROM (
+          SELECT *, row_number() OVER w AS position, count(*) OVER w AS entries
+          FROM (${rows})
+          WINDOW w AS (
+            PARTITION BY source, address
+            ORDER BY at DESC, outbound DESC, source ASC, ref ASC
+            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+          )
+        )
+        WHERE position = 1
+      `)) as Array<Record<string, unknown>>;
+
+      const byAddress = new Map<string, { latest: TimelineEntry; messageCount: number }>();
+      for (const row of summaries) {
+        byAddress.set(addressKey(String(row.source), String(row.address)), {
+          latest: toEntry(row, options.body),
+          messageCount: Number(row.entries),
+        });
+      }
+
+      // An account is addressed several ways and each addressing grouped on its
+      // own above, so the account's summary is those groups folded: the newest
+      // head wins and the lengths add. Left unfolded, a WhatsApp contact whose
+      // history straddles a phone JID and a `@lid` JID would report whichever
+      // half the store listed first.
+      const digests: AccountDigest[] = [];
+      for (const account of accounts) {
+        const parts = account.addresses
+          .map((address) => byAddress.get(addressKey(account.channel, address)))
+          .filter((part) => part !== undefined);
+        if (parts.length === 0) continue;
+        digests.push({
+          account,
+          latest: parts.map((part) => part.latest).sort(compareTimelineEntries)[0],
+          messageCount: parts.reduce((total, part) => total + part.messageCount, 0),
+        });
+      }
+      return digests;
+    },
+
     async read(request: TimelineRead) {
       const rows = view(request.accounts);
       if (rows === null) return [];
@@ -65,21 +122,26 @@ export function sqlTimelineSource(options: {
         ORDER BY at DESC, outbound DESC, source ASC, ref ASC
         LIMIT ${Math.max(1, Math.floor(request.limit))}
       `)) as Array<Record<string, unknown>>;
-      return page.map((row) => {
-        const body = (row.body as string | null) ?? null;
-        return {
-          source: String(row.source),
-          timestamp: Number(row.at),
-          direction: Number(row.outbound) === 1 ? ("outbound" as const) : ("inbound" as const),
-          ref: String(row.ref),
-          body: options.body ? options.body(body) : body,
-        };
-      });
+      return page.map((row) => toEntry(row, options.body));
     },
   };
 }
 
 const addressKey = (channel: string, address: string) => `${channel}\n${address}`;
+
+function toEntry(
+  row: Record<string, unknown>,
+  body?: (raw: string | null) => string | null,
+): TimelineEntry {
+  const raw = (row.body as string | null) ?? null;
+  return {
+    source: String(row.source),
+    timestamp: Number(row.at),
+    direction: Number(row.outbound) === 1 ? "outbound" : "inbound",
+    ref: String(row.ref),
+    body: body ? body(raw) : raw,
+  };
+}
 
 /**
  * The rows that fall strictly after `cursor`, in the order the ORDER BY above

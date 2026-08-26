@@ -33,20 +33,33 @@ export interface TimelineRead {
   limit: number;
 }
 
+/** One account's history as a store summarizes it — see
+ *  {@link TimelineSource.digest}. */
+export interface AccountDigest {
+  /** The element of the `accounts` the store was given, not a copy of it. */
+  account: TimelineAccount;
+  /** The newest entry, first in {@link compareTimelineEntries} order. */
+  latest: TimelineEntry;
+  /** Every entry the store holds for the account. */
+  messageCount: number;
+}
+
 /**
  * One message store, as a person's timeline reads it.
  *
  * Adding a store is one implementation of this interface listed alongside the
  * others; nothing above here knows how many there are or what they read.
  *
- * The two methods exist because the stores overlap rather than partition. One
- * inbound WhatsApp message is a `wa_messages` row, a `rome_agent_messages` row
- * on the channel session, and — when the sentinel triaged it — a `sentinel_log`
- * row as well. Merging all three renders one message three times, and the
- * copies carry different ids at different timestamps, so no after-the-fact
- * dedupe survives a page boundary. Instead each account's timeline comes from
- * exactly one store: {@link holds} is asked in order, and the first store that
- * holds an account owns it.
+ * The store answers which accounts it holds as well as what it holds for them,
+ * because the stores overlap rather than partition. One inbound WhatsApp
+ * message is a `wa_messages` row, a `rome_agent_messages` row on the channel
+ * session, and — when the sentinel triaged it — a `sentinel_log` row as well.
+ * Merging all three renders one message three times, and the copies carry
+ * different ids at different timestamps, so no after-the-fact dedupe survives
+ * a page boundary. Instead each account's timeline comes from exactly one
+ * store: the stores are asked in order, and the first one that holds an
+ * account owns it — for the page ({@link holds}, then {@link read}) and for
+ * the summary ({@link digest}) alike.
  */
 export interface TimelineSource {
   /** Stable, for tests and logs. Never {@link TimelineEntry.source}, which
@@ -57,6 +70,21 @@ export interface TimelineSource {
    *  the returned accounts are the caller's own; a store returns the elements
    *  it was given. */
   holds(accounts: readonly TimelineAccount[]): Promise<TimelineAccount[]>;
+
+  /**
+   * The same timeline {@link read} pages, summarized: the newest entry of each
+   * account, and how many entries it has in all.
+   *
+   * One read for a whole listing rather than one per person, and the newest
+   * entry is picked under {@link read}'s own ordering — so a directory row
+   * previews exactly the entry its dossier opens on, and its count is the
+   * length of exactly the history the dossier pages.
+   *
+   * Asked only about accounts {@link holds} has already given this store, so
+   * an account it holds nothing for is a person with no history rather than
+   * one whose history the next store down should have answered for.
+   */
+  digest(accounts: readonly TimelineAccount[]): Promise<AccountDigest[]>;
 
   /**
    * This store's newest entries for `accounts`, at most `limit` of them, every
@@ -112,9 +140,16 @@ export async function readPersonTimeline(
   };
 }
 
-/** Each store paired with the accounts it owns: the first store that holds an
- *  account takes it, and no later store is offered it. */
-async function assignAccounts(
+/**
+ * Each store paired with the accounts it owns: the first store that holds an
+ * account takes it, and no later store is offered it.
+ *
+ * The one place that rule is applied. Every read of a person's history — the
+ * page here, the summary in activity.ts — goes through this, because a summary
+ * that claimed accounts on its own terms could count an exchange the page
+ * attributes to a different store.
+ */
+export async function assignAccounts(
   sources: readonly TimelineSource[],
   accounts: readonly TimelineAccount[],
 ): Promise<Array<[TimelineSource, TimelineAccount[]]>> {

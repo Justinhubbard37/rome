@@ -34,7 +34,7 @@ export function personsRoutes(deps: ApiDeps): Hono {
   const app = new Hono();
 
   app.get("/persons", async (c) => {
-    const rows = await deps.personMappingRepo.findAll();
+    const rows = await deps.personMappingRepo.findAllWithMappings();
     return c.json(rows);
   });
 

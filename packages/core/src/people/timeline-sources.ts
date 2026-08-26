@@ -193,8 +193,8 @@ export function sentinelLogSource(db: DrizzleDb): TimelineSource {
 }
 
 /**
- * Every account a person is reachable at, with every address the channel folds
- * onto it.
+ * Every account each group of mappings is reachable at, with every address the
+ * channel folds onto it — one result per group, in the order given.
  *
  * Two mappings that name two addressings of one account collapse to one
  * account, so a person mapped under both a WhatsApp phone JID and its `@lid`
@@ -202,33 +202,75 @@ export function sentinelLogSource(db: DrizzleDb): TimelineSource {
  *
  * A channel with no account plane contributes the mapping's own address and
  * nothing else, which is all the channel can say about who it can reach.
+ *
+ * Positional and over every group at once, like `AccountNames.displayNames`
+ * next door: each channel's address book costs a full read, so one caller
+ * asking about a directory of people must not pay for one read per row.
  */
-export async function personTimelineAccounts(
+export async function timelineAccounts(
   deps: { whatsAppAccounts: TalkAccounts },
-  mappings: readonly { channel: string; channelUserId: string }[],
-): Promise<TimelineAccount[]> {
+  groups: readonly (readonly ChannelMapping[])[],
+): Promise<TimelineAccount[][]> {
+  const channels = new Set(groups.flatMap((group) => group.map((mapping) => mapping.channel)));
+  const books = await readAddressBooks(deps, channels);
+  return groups.map((group) => foldAccounts(books, group));
+}
+
+interface ChannelMapping {
+  channel: string;
+  channelUserId: string;
+}
+
+/** Every address a channel folds onto an account, grouped by the account —
+ *  the address map read the way the fold needs it, inverted once per request
+ *  rather than re-scanned per person.
+ *
+ *  Read only for the channels the mappings name, since a plane costs a full
+ *  address-book read. LinkedIn has a plane too but is deliberately absent: it
+ *  stores a member under its member id and nothing else, so folding it would
+ *  buy a whole mirror read and change no answer. It joins here when it starts
+ *  storing a second addressing. */
+async function readAddressBooks(
+  deps: { whatsAppAccounts: TalkAccounts },
+  channels: ReadonlySet<string>,
+): Promise<Map<string, AddressBook>> {
   const planes = new Map<string, TalkAccounts>([["whatsapp", deps.whatsAppAccounts]]);
-
-  const addressesByChannel = new Map<string, Map<string, string>>();
+  const books = new Map<string, AddressBook>();
   for (const [channel, accounts] of planes) {
-    // Reading a plane costs a full address-book read, so a person with no
-    // mapping on the channel never pays for one.
-    if (!mappings.some((mapping) => mapping.channel === channel)) continue;
-    addressesByChannel.set(channel, await accounts.listAddresses());
+    if (!channels.has(channel)) continue;
+    const addresses = await accounts.listAddresses();
+    const byAccount = new Map<string, string[]>();
+    for (const [address, accountId] of addresses) {
+      const folded = byAccount.get(accountId);
+      if (folded) folded.push(address);
+      else byAccount.set(accountId, [address]);
+    }
+    books.set(channel, { of: addresses, folded: byAccount });
   }
+  return books;
+}
 
+/** One channel's address map, and the same map read the other way round. */
+interface AddressBook {
+  /** Which account each address belongs to. */
+  of: Map<string, string>;
+  /** Every address of each account. */
+  folded: Map<string, string[]>;
+}
+
+function foldAccounts(
+  books: Map<string, AddressBook>,
+  mappings: readonly ChannelMapping[],
+): TimelineAccount[] {
   const byAccount = new Map<string, TimelineAccount>();
   for (const mapping of mappings) {
-    const addresses = addressesByChannel.get(mapping.channel);
-    const accountId = addresses?.get(mapping.channelUserId) ?? mapping.channelUserId;
+    const book = books.get(mapping.channel);
+    const accountId = book?.of.get(mapping.channelUserId) ?? mapping.channelUserId;
     const key = `${mapping.channel}\n${accountId}`;
     if (byAccount.has(key)) continue;
-    const folded = addresses
-      ? [...addresses].filter(([, id]) => id === accountId).map(([address]) => address)
-      : [];
     byAccount.set(key, {
       channel: mapping.channel,
-      addresses: [...new Set([mapping.channelUserId, ...folded])],
+      addresses: [...new Set([mapping.channelUserId, ...(book?.folded.get(accountId) ?? [])])],
     });
   }
   return [...byAccount.values()];

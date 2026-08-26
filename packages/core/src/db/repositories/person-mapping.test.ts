@@ -18,6 +18,18 @@ describe("PersonMappingRepository", () => {
     testDb.close();
   });
 
+  /** What marking a sender as a stranger does: file the identity under the
+   *  sentinel rather than deleting it. */
+  async function dismiss(channel: string, channelUserId: string, displayName?: string) {
+    if (!(await repo.findById(STRANGER_PERSON_ID))) {
+      await repo.createWithId(STRANGER_PERSON_ID, {
+        displayName: "Stranger",
+        bondLevel: "other",
+      });
+    }
+    await repo.addChannelMapping(STRANGER_PERSON_ID, channel, channelUserId, displayName);
+  }
+
   it("findAllWithMappings() reads every person and their identities at once", async () => {
     // One statement, so an identity moving between two people mid-read cannot
     // land under both of them — which is the identity union's whole premise.
@@ -445,19 +457,121 @@ describe("PersonMappingRepository", () => {
     });
   });
 
-  describe("create() claiming channel identities", () => {
-    /** What marking a sender as a stranger does: file the identity under the
-     *  sentinel rather than deleting it. */
-    async function dismiss(channel: string, channelUserId: string, displayName?: string) {
-      if (!(await repo.findById(STRANGER_PERSON_ID))) {
-        await repo.createWithId(STRANGER_PERSON_ID, {
-          displayName: "Stranger",
-          bondLevel: "other",
-        });
-      }
-      await repo.addChannelMapping(STRANGER_PERSON_ID, channel, channelUserId, displayName);
-    }
+  describe("linkAccount() compare-and-swap", () => {
+    it("takes an account nobody holds, and names it only from the channel", async () => {
+      const person = await repo.create({ displayName: "Alice", bondLevel: "other" });
 
+      expect(
+        await repo.linkAccount({ personId: person, channel: "telegram", channelUserId: "tg-new" }),
+      ).toEqual({ linked: true });
+
+      const rows = await testDb.db
+        .select()
+        .from(channelMappings)
+        .where(eq(channelMappings.channelUserId, "tg-new"));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].personId).toBe(person);
+      // A link names an account; what to call it is the provider directory's
+      // answer at read time, so a claim invents no name.
+      expect(rows[0].displayName).toBeNull();
+    });
+
+    it("refuses an account a real person holds, and writes nothing", async () => {
+      const holder = await repo.create({ displayName: "Holder", bondLevel: "other" });
+      const claimant = await repo.create({ displayName: "Claimant", bondLevel: "other" });
+      await repo.addChannelMapping(holder, "telegram", "tg-held", "Held");
+
+      const result = await repo.linkAccount({
+        personId: claimant,
+        channel: "telegram",
+        channelUserId: "tg-held",
+      });
+
+      expect(result).toEqual({
+        linked: false,
+        holder: { personId: holder, personName: "Holder" },
+      });
+      const rows = await testDb.db
+        .select()
+        .from(channelMappings)
+        .where(eq(channelMappings.channelUserId, "tg-held"));
+      expect(rows.map((row) => row.personId)).toEqual([holder]);
+    });
+
+    it("reclaims an account that was only dismissed, and keeps its name", async () => {
+      const person = await repo.create({ displayName: "Alice", bondLevel: "other" });
+      await dismiss("telegram", "tg-set-aside", "Sender");
+
+      expect(
+        await repo.linkAccount({
+          personId: person,
+          channel: "telegram",
+          channelUserId: "tg-set-aside",
+        }),
+      ).toEqual({ linked: true });
+
+      // The row moves rather than being replaced, so the name the channel put
+      // on it survives the reclaim.
+      const rows = await testDb.db
+        .select()
+        .from(channelMappings)
+        .where(eq(channelMappings.channelUserId, "tg-set-aside"));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].personId).toBe(person);
+      expect(rows[0].displayName).toBe("Sender");
+    });
+
+    it("lets only the first of two callers working from one view take the account", async () => {
+      const holder = await repo.create({ displayName: "Holder", bondLevel: "other" });
+      const first = await repo.create({ displayName: "First", bondLevel: "other" });
+      const second = await repo.create({ displayName: "Second", bondLevel: "other" });
+      await repo.addChannelMapping(holder, "telegram", "tg-contested");
+
+      // Both read the same page, so both name the same owner to swap out. The
+      // check and the move are one transaction, so the second reads an owner
+      // that is no longer the one it expects instead of overwriting a transfer
+      // it never saw.
+      const won = await repo.linkAccount({
+        personId: first,
+        channel: "telegram",
+        channelUserId: "tg-contested",
+        transferFrom: holder,
+      });
+      const lost = await repo.linkAccount({
+        personId: second,
+        channel: "telegram",
+        channelUserId: "tg-contested",
+        transferFrom: holder,
+      });
+
+      expect(won).toEqual({ linked: true });
+      expect(lost).toEqual({ linked: false, holder: { personId: first, personName: "First" } });
+      const rows = await testDb.db
+        .select()
+        .from(channelMappings)
+        .where(eq(channelMappings.channelUserId, "tg-contested"));
+      expect(rows.map((row) => row.personId)).toEqual([first]);
+    });
+
+    it("unlinkAccount() drops one link and leaves the person's others", async () => {
+      const person = await repo.create({ displayName: "Alice", bondLevel: "other" });
+      await repo.addChannelMapping(person, "telegram", "tg-one");
+      await repo.addChannelMapping(person, "whatsapp", "wa-one");
+
+      expect(await repo.unlinkAccount(person, "telegram", "tg-one")).toBe(true);
+      // A link nobody holds, and one held by somebody else, are both nothing
+      // for this person to drop.
+      expect(await repo.unlinkAccount(person, "telegram", "tg-one")).toBe(false);
+
+      const rows = await testDb.db
+        .select()
+        .from(channelMappings)
+        .where(eq(channelMappings.personId, person));
+      expect(rows.map((row) => row.channelUserId)).toEqual(["wa-one"]);
+    });
+  });
+
+  describe("create() claiming channel identities", () => {
     it("reclaims an identity that was only dismissed onto the stranger sentinel", async () => {
       await dismiss("whatsapp", "+15551234", "Bob");
 

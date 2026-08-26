@@ -4,6 +4,7 @@ import { persons, channelMappings } from "../schema.js";
 import type { DrizzleDb, SqliteExec } from "../index.js";
 import { STRANGER_PERSON_ID } from "../../constants.js";
 import { generatePersonSlug, nextAvailablePersonId } from "@rome/api-types/persons";
+import type { AccountHolder } from "@rome/api-types/people";
 
 // Re-exported so existing importers keep their path. The derivation itself
 // lives in the shared package because the dashboard's mock backend has to
@@ -17,6 +18,11 @@ interface ChannelClaim {
   channelUserId: string;
   displayName: string | null;
 }
+
+/** What a {@link PersonMappingRepository.linkAccount} attempt did: took the
+ *  account, or refused it and named whoever holds it — null where nobody does,
+ *  which is what a stale `transferFrom` runs into. */
+export type LinkAccountResult = { linked: true } | { linked: false; holder: AccountHolder | null };
 
 export interface NewPersonData {
   displayName: string;
@@ -524,13 +530,91 @@ export class PersonMappingRepository {
       .run();
   }
 
-  async reassignChannelMapping(channel: string, channelUserId: string, newPersonId: string) {
-    await this.db
-      .update(channelMappings)
-      .set({ personId: newPersonId })
+  /**
+   * Link an account to a person, if it is still where the caller last saw it.
+   *
+   * `transferFrom` is the owner the caller is taking the account from, and it
+   * has to hold the account at the moment of the write. Omitted, the caller is
+   * claiming an account they believe nobody holds — an unlinked one, one only
+   * dismissed onto the sentinel, or one this person already holds, which is the
+   * same request arriving twice. Every other case refuses and names the holder.
+   *
+   * The read and the move are one transaction, so of two callers working from
+   * the same page exactly one lands the account: the loser's expected owner is
+   * no longer the owner by the time its own transaction reads, and it is
+   * refused rather than overwriting a transfer it never saw.
+   */
+  async linkAccount(params: {
+    personId: string;
+    channel: string;
+    channelUserId: string;
+    transferFrom?: string | null;
+  }): Promise<LinkAccountResult> {
+    const { personId, channel, channelUserId } = params;
+    const expected = params.transferFrom ?? null;
+
+    return this.db.transaction((tx): LinkAccountResult => {
+      const link = tx
+        .select({
+          id: channelMappings.id,
+          personId: channelMappings.personId,
+          personName: persons.displayName,
+        })
+        .from(channelMappings)
+        .innerJoin(persons, eq(persons.id, channelMappings.personId))
+        .where(
+          and(
+            eq(channelMappings.channel, channel),
+            eq(channelMappings.channelUserId, channelUserId),
+          ),
+        )
+        .get();
+
+      // A dismissal is a link onto the sentinel rather than a placement, so it
+      // holds the account against nobody: naming its sender takes it back, on
+      // the same terms as {@link resolveClaims}.
+      const holder =
+        link && link.personId !== STRANGER_PERSON_ID
+          ? { personId: link.personId, personName: link.personName }
+          : null;
+
+      const swapped =
+        expected === null
+          ? holder === null || holder.personId === personId
+          : holder?.personId === expected;
+      if (!swapped) return { linked: false, holder };
+
+      if (link == null) {
+        // The channel's name for the account is not this caller's to supply —
+        // a link names an account, and what to call it comes from the provider
+        // directory at read time.
+        tx.insert(channelMappings)
+          .values({ id: uuid(), personId, channel, channelUserId, displayName: null })
+          .run();
+      } else if (link.personId !== personId) {
+        // The row moves rather than being replaced, so the channel-side name it
+        // carries survives a transfer the way it survives a reclaim.
+        tx.update(channelMappings).set({ personId }).where(eq(channelMappings.id, link.id)).run();
+      }
+      return { linked: true };
+    });
+  }
+
+  /** Drop one person's link to an account, leaving the account itself and
+   *  every other link they hold alone. Reports whether the link was theirs to
+   *  drop, which is the only way a caller can tell an unlink from a no-op. */
+  async unlinkAccount(personId: string, channel: string, channelUserId: string): Promise<boolean> {
+    const result = this.db
+      .delete(channelMappings)
       .where(
-        and(eq(channelMappings.channel, channel), eq(channelMappings.channelUserId, channelUserId)),
-      );
+        and(
+          eq(channelMappings.personId, personId),
+          eq(channelMappings.channel, channel),
+          eq(channelMappings.channelUserId, channelUserId),
+        ),
+      )
+      .run();
+    return result.changes > 0;
   }
 }
 

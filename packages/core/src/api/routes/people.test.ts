@@ -755,3 +755,206 @@ describe("People API", () => {
     return (await res.json()) as TimelinePage;
   }
 });
+
+// POST/DELETE /people/:id/accounts — the link verb, and the compare-and-swap
+// that decides who an account's whole history belongs to. These tests pin what
+// a caller working from a stale page is told, and that being told it leaves
+// the stored link exactly where it was.
+
+describe("People account links", () => {
+  const NEWCOMER = { channel: "telegram", channelUserId: "tg-newcomer" };
+  const DISMISSED = { channel: "telegram", channelUserId: "tg-dismissed" };
+  const BOBS = { channel: "telegram", channelUserId: "tg-bob" };
+  const ALICES = { channel: "telegram", channelUserId: "tg-alice" };
+
+  let testDb: TestDb;
+  let deps: TestDeps;
+  let app: Hono;
+  let baseline: BaselineIds;
+  let alice: string;
+  let bob: string;
+  let carol: string;
+
+  beforeEach(async () => {
+    testDb = createTestDb();
+    baseline = await seedBaseline(testDb.db);
+    deps = await buildTestDeps(testDb.db);
+    app = new Hono().route("/", peopleRoutes(deps));
+    alice = baseline.persons.innerCircleId;
+    bob = baseline.persons.acquaintanceId;
+    carol = baseline.persons.otherId;
+
+    // An account the guardian set aside: stored as a link onto the sentinel,
+    // which is a dismissal rather than a person holding it.
+    await deps.personMappingRepo.addChannelMapping(
+      STRANGER_PERSON_ID,
+      DISMISSED.channel,
+      DISMISSED.channelUserId,
+      "Dismissed Sender",
+    );
+  });
+
+  afterEach(() => testDb.close());
+
+  const link = (personId: string, body: unknown) =>
+    app.request(`/people/${personId}/accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  const unlink = (personId: string, account: { channel: string; channelUserId: string }) =>
+    app.request(`/people/${personId}/accounts/${account.channel}/${account.channelUserId}`, {
+      method: "DELETE",
+    });
+
+  const refs = (person: PersonResource) =>
+    person.accounts.map((account) => `${account.channel}:${account.channelUserId}`);
+
+  async function accountsOf(id: string): Promise<string[]> {
+    const res = await app.request(`/people/${id}`);
+    expect(res.status).toBe(200);
+    return refs((await res.json()) as PersonResource);
+  }
+
+  /** Who the stored link says holds an account, or null when nothing does. */
+  async function holderOf(account: { channel: string; channelUserId: string }) {
+    const person = await deps.personMappingRepo.findByChannelUser(
+      account.channel,
+      account.channelUserId,
+    );
+    return person?.id ?? null;
+  }
+
+  it("takes an account nobody holds, and answers the person holding it now", async () => {
+    const res = await link(alice, NEWCOMER);
+
+    expect(res.status).toBe(200);
+    const person = (await res.json()) as PersonResource;
+    expect(person.id).toBe(alice);
+    expect(refs(person)).toEqual(expect.arrayContaining(["telegram:tg-newcomer"]));
+    expect(await holderOf(NEWCOMER)).toBe(alice);
+  });
+
+  it("takes a dismissed account without being told to", async () => {
+    // A dismissal is a link onto the sentinel, not a person's claim, so naming
+    // the sender takes it back with no transfer to declare.
+    const res = await link(alice, DISMISSED);
+
+    expect(res.status).toBe(200);
+    expect(await holderOf(DISMISSED)).toBe(alice);
+  });
+
+  it("refuses an account another person holds, and names them", async () => {
+    const res = await link(alice, BOBS);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      channel: "telegram",
+      channelUserId: "tg-bob",
+      holder: { personId: bob, personName: "Bob Acquaintance" },
+    });
+    expect(await holderOf(BOBS)).toBe(bob);
+    expect(await accountsOf(alice)).toEqual(["telegram:tg-alice"]);
+  });
+
+  it("moves an account when transferFrom names the person holding it", async () => {
+    const res = await link(alice, { ...BOBS, transferFrom: bob });
+
+    expect(res.status).toBe(200);
+    expect(refs((await res.json()) as PersonResource)).toEqual(
+      expect.arrayContaining(["telegram:tg-alice", "telegram:tg-bob"]),
+    );
+    expect(await accountsOf(bob)).toEqual([]);
+  });
+
+  it("refuses a stale transferFrom and moves nothing", async () => {
+    const wrongOwner = await link(alice, { ...BOBS, transferFrom: carol });
+
+    expect(wrongOwner.status).toBe(409);
+    expect(await wrongOwner.json()).toMatchObject({ holder: { personId: bob } });
+    expect(await holderOf(BOBS)).toBe(bob);
+
+    // The same staleness the other way round: the caller names an owner for an
+    // account that has none, so their view is wrong and the swap fails.
+    const noOwner = await link(alice, { ...NEWCOMER, transferFrom: bob });
+
+    expect(noOwner.status).toBe(409);
+    expect(await noOwner.json()).toMatchObject({ holder: null });
+    expect(await holderOf(NEWCOMER)).toBeNull();
+  });
+
+  it("never names the sentinel as an account's holder", async () => {
+    const res = await link(alice, { ...DISMISSED, transferFrom: bob });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ holder: null });
+    expect(JSON.stringify(body)).not.toContain(STRANGER_PERSON_ID);
+    expect(await holderOf(DISMISSED)).toBe(STRANGER_PERSON_ID);
+  });
+
+  it("answers a re-link to the same person without disturbing their accounts", async () => {
+    const plain = await link(alice, ALICES);
+    expect(plain.status).toBe(200);
+    expect(refs((await plain.json()) as PersonResource)).toEqual(["telegram:tg-alice"]);
+
+    // A retry that carries the owner it read is naming this person, which is
+    // the same request answered twice rather than a transfer.
+    const withTransfer = await link(alice, { ...ALICES, transferFrom: alice });
+    expect(withTransfer.status).toBe(200);
+    expect(await accountsOf(alice)).toEqual(["telegram:tg-alice"]);
+  });
+
+  it("lets only one of two conflicting transfers land the account", async () => {
+    // Both callers read the same page, where Bob holds the account, and both
+    // ask to take it from him.
+    const [first, second] = await Promise.all([
+      link(alice, { ...BOBS, transferFrom: bob }),
+      link(carol, { ...BOBS, transferFrom: bob }),
+    ]);
+
+    expect([first.status, second.status].sort()).toEqual([200, 409]);
+    const holder = await holderOf(BOBS);
+    expect([alice, carol]).toContain(holder);
+    expect(await accountsOf(bob)).toEqual([]);
+    // The loser is told who holds it now, so its next attempt can be the
+    // explicit transfer from whoever won.
+    const refused = first.status === 409 ? first : second;
+    expect(await refused.json()).toMatchObject({ holder: { personId: holder } });
+  });
+
+  it("refuses a body that names no account", async () => {
+    expect((await link(alice, {})).status).toBe(400);
+    expect((await link(alice, { channel: "telegram" })).status).toBe(400);
+    expect((await link(alice, { ...BOBS, transferFrom: "" })).status).toBe(400);
+    expect(await accountsOf(alice)).toEqual(["telegram:tg-alice"]);
+  });
+
+  it("answers 404 for an unknown person and for the stranger sentinel", async () => {
+    expect((await link("nobody-here", NEWCOMER)).status).toBe(404);
+    expect((await link(STRANGER_PERSON_ID, NEWCOMER)).status).toBe(404);
+    expect((await unlink("nobody-here", ALICES)).status).toBe(404);
+    expect((await unlink(STRANGER_PERSON_ID, DISMISSED)).status).toBe(404);
+    expect(await holderOf(DISMISSED)).toBe(STRANGER_PERSON_ID);
+  });
+
+  it("unlinks only the account named", async () => {
+    expect((await link(alice, NEWCOMER)).status).toBe(200);
+
+    const res = await unlink(alice, ALICES);
+
+    expect(res.status).toBe(200);
+    expect(refs((await res.json()) as PersonResource)).toEqual(["telegram:tg-newcomer"]);
+    expect(await holderOf(ALICES)).toBeNull();
+  });
+
+  it("answers 404 when the person does not hold the account", async () => {
+    // Held by someone else, so unlinking it here would be a way to reach into
+    // their accounts.
+    expect((await unlink(alice, BOBS)).status).toBe(404);
+    expect(await holderOf(BOBS)).toBe(bob);
+
+    expect((await unlink(alice, NEWCOMER)).status).toBe(404);
+  });
+});

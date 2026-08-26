@@ -1,7 +1,9 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   comparePeople,
   countPeople,
+  linkConflict,
+  parseLinkAccountRequest,
   parsePersonFilterLevel,
   parseTimelineCursor,
   personMatchesLevel,
@@ -14,11 +16,14 @@ import { readPersonTimeline } from "../../people/timeline.js";
 import { personTimelineSources, timelineAccounts } from "../../people/timeline-sources.js";
 import type { ApiDeps } from "../deps.js";
 
-// The People surface's reads. What a person and their accounts are, how the
-// listing orders and counts, and what a page of history is are the contract's
-// (@rome/api-types/people); serializing a person is `src/people/resource.ts`;
-// which stores a history is merged from is the rest of `src/people/`. These
-// handlers parse query parameters and hold no rule of their own.
+// The People surface's reads, and the link verb that moves an account between
+// people. What a person and their accounts are, how the listing orders and
+// counts, when a link may be taken and what a page of history is are the
+// contract's (@rome/api-types/people); serializing a person is
+// `src/people/resource.ts`; which stores a history is merged from is the rest
+// of `src/people/`; the compare-and-swap the link rides on is the person
+// repository's, because only a transaction there can decide it. These handlers
+// parse requests and hold no rule of their own.
 
 export function peopleRoutes(deps: ApiDeps): Hono {
   const app = new Hono();
@@ -50,6 +55,42 @@ export function peopleRoutes(deps: ApiDeps): Hono {
     return person ? c.json(person) : c.json({ error: "Unknown person" }, 404);
   });
 
+  app.post("/people/:id/accounts", async (c) => {
+    const person = await findPerson(deps, c.req.param("id"));
+    if (!person) return c.json({ error: "Unknown person" }, 404);
+
+    const request = parseLinkAccountRequest(await c.req.json().catch(() => null));
+    if (!request) return c.json({ error: "channel and channelUserId are required" }, 400);
+
+    const result = await deps.personMappingRepo.linkAccount({
+      personId: person.id,
+      channel: request.channel,
+      channelUserId: request.channelUserId,
+      transferFrom: request.transferFrom,
+    });
+    if (!result.linked) return c.json(linkConflict(request, result.holder), 409);
+
+    return respondWithPerson(deps, c, person.id);
+  });
+
+  app.delete("/people/:id/accounts/:channel/:channelUserId", async (c) => {
+    const person = await findPerson(deps, c.req.param("id"));
+    if (!person) return c.json({ error: "Unknown person" }, 404);
+
+    // A link this person does not hold is one this route cannot drop, whoever
+    // else holds it: unlinking is not a way to reach into another person's
+    // accounts, and reporting success would tell the caller their view was
+    // right when it was stale.
+    const unlinked = await deps.personMappingRepo.unlinkAccount(
+      person.id,
+      c.req.param("channel"),
+      c.req.param("channelUserId"),
+    );
+    if (!unlinked) return c.json({ error: "Unknown account" }, 404);
+
+    return respondWithPerson(deps, c, person.id);
+  });
+
   app.get("/people/:id/messages", async (c) => {
     const person = await findPerson(deps, c.req.param("id"));
     if (!person) return c.json({ error: "Unknown person" }, 404);
@@ -77,4 +118,12 @@ export function peopleRoutes(deps: ApiDeps): Hono {
   });
 
   return app;
+}
+
+/** The person a write just changed, read back through the same serializer the
+ *  reads answer with, so a client can render the outcome without a second
+ *  request. */
+async function respondWithPerson(deps: ApiDeps, c: Context, id: string) {
+  const person = await readPerson(deps, id);
+  return person ? c.json(person) : c.json({ error: "Unknown person" }, 404);
 }

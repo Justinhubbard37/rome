@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDb, type TestDb } from "../../test/helpers.js";
-import { PersonMappingRepository } from "./person-mapping.js";
+import { AccountHeldError, PersonMappingRepository } from "./person-mapping.js";
 import { eq } from "drizzle-orm";
 import { persons, channelMappings } from "../schema.js";
 import { STRANGER_PERSON_ID } from "../../constants.js";
@@ -504,6 +504,38 @@ describe("PersonMappingRepository", () => {
       ).rejects.toThrow(/already belongs to person "alice"/);
 
       expect((await repo.findByChannelUser("whatsapp", "+15551234"))?.id).toBe(alice);
+    });
+
+    it("names the person holding the identity it refused", async () => {
+      const alice = await repo.create({
+        displayName: "Alice Marsh",
+        bondLevel: "inner-circle",
+        channelMappings: [{ channel: "whatsapp", channelUserId: "+15551234" }],
+      });
+
+      // The holder's own name, not the channel-side one the mapping carries: a
+      // caller reporting the conflict has to say whose account it is, and the
+      // guardian knows the person by the name they gave them.
+      const refused = await repo
+        .create({
+          displayName: "Bob",
+          bondLevel: "inner-circle",
+          channelMappings: [
+            { channel: "telegram", channelUserId: "tg-bob" },
+            { channel: "whatsapp", channelUserId: "+15551234" },
+          ],
+        })
+        .catch((err: unknown) => err);
+
+      expect(refused).toBeInstanceOf(AccountHeldError);
+      expect((refused as AccountHeldError).holder).toEqual({
+        channel: "whatsapp",
+        channelUserId: "+15551234",
+        personId: alice,
+        personName: "Alice Marsh",
+      });
+      // The unheld identity in the same request is still unheld.
+      expect(await repo.findByChannelUser("telegram", "tg-bob")).toBeNull();
     });
 
     it("leaves no half-made person behind when a claim is refused", async () => {

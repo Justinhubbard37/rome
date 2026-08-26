@@ -755,3 +755,189 @@ describe("People API", () => {
     return (await res.json()) as TimelinePage;
   }
 });
+
+// POST /people — the guardian names someone, and says which accounts are
+// theirs. Both halves land or neither does, so most of these tests check what
+// is in the database after a refusal rather than only the status code.
+
+describe("People create API", () => {
+  const ALICE_JID = "15550002222@s.whatsapp.net";
+  const BOB_JID = "15550003333@s.whatsapp.net";
+
+  let testDb: TestDb;
+  let deps: TestDeps;
+  let app: Hono;
+
+  beforeEach(async () => {
+    testDb = createTestDb();
+    await seedBaseline(testDb.db);
+    deps = await buildTestDeps(testDb.db);
+    app = new Hono().route("/", peopleRoutes(deps));
+
+    await deps.whatsAppStoreRepo.upsertContacts([
+      { jid: ALICE_JID, phoneNumber: "15550002222", name: "Alice Marsh" },
+      { jid: BOB_JID, phoneNumber: "15550003333", name: "Bob Reyes" },
+    ]);
+  });
+
+  afterEach(() => testDb.close());
+
+  it("creates the person and both links, named as each platform names them", async () => {
+    const res = await create({
+      displayName: "Bob Reyes",
+      bondLevel: "inner-circle",
+      accounts: [
+        { channel: "whatsapp", channelUserId: BOB_JID },
+        { channel: "telegram", channelUserId: "tg-bob-reyes" },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    const person = (await res.json()) as PersonResource;
+    expect(person.id).toBe("bob-reyes");
+    expect(person.bondLevel).toBe("inner-circle");
+    expect(person.accounts).toEqual([
+      { channel: "whatsapp", channelUserId: BOB_JID, displayName: "Bob Reyes" },
+      // No mirror answers for telegram, so the address is the only name there
+      // is — the person's own name never stands in for it.
+      { channel: "telegram", channelUserId: "tg-bob-reyes", displayName: "tg-bob-reyes" },
+    ]);
+
+    // The response is a read of what was written, not a copy of the request.
+    expect(await fetchPerson("bob-reyes")).toEqual(person);
+    const { people } = await fetchList();
+    expect(people.map((p) => p.id)).toContain("bob-reyes");
+  });
+
+  it("places a person at 'other' when the request names no bond level", async () => {
+    const res = await create({ displayName: "Unranked" });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as PersonResource).bondLevel).toBe("other");
+  });
+
+  it("refuses the whole request over one held account, and writes nothing", async () => {
+    const alice = await deps.personMappingRepo.create({
+      displayName: "Alice Marsh",
+      bondLevel: "inner-circle",
+      approved: true,
+      channelMappings: [{ channel: "whatsapp", channelUserId: ALICE_JID }],
+    });
+
+    const res = await create({
+      displayName: "Bob Reyes",
+      accounts: [
+        { channel: "telegram", channelUserId: "tg-bob-reyes" },
+        { channel: "whatsapp", channelUserId: ALICE_JID },
+      ],
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.stringContaining("Alice Marsh"),
+      channel: "whatsapp",
+      channelUserId: ALICE_JID,
+      linkedPersonId: alice,
+      linkedPersonName: "Alice Marsh",
+    });
+
+    // Neither half of the request survived: no person, and the account that
+    // was free before the call is still free.
+    expect((await fetchPeopleRes("bob-reyes")).status).toBe(404);
+    expect(await deps.personMappingRepo.findByChannelUser("telegram", "tg-bob-reyes")).toBeNull();
+    expect((await deps.personMappingRepo.findByChannelUser("whatsapp", ALICE_JID))?.id).toBe(alice);
+  });
+
+  it("links an account that only a dismissal held", async () => {
+    await deps.personMappingRepo.addChannelMapping(
+      STRANGER_PERSON_ID,
+      "whatsapp",
+      BOB_JID,
+      "Bob Reyes",
+    );
+
+    const res = await create({
+      displayName: "Bob Reyes",
+      accounts: [{ channel: "whatsapp", channelUserId: BOB_JID }],
+    });
+
+    expect(res.status).toBe(201);
+    expect((await deps.personMappingRepo.findByChannelUser("whatsapp", BOB_JID))?.id).toBe(
+      "bob-reyes",
+    );
+    const sentinel = await deps.personMappingRepo.findById(STRANGER_PERSON_ID);
+    expect(sentinel!.channelMappings).toHaveLength(0);
+  });
+
+  it("numbers people who share a name, counting the first as one", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await create({ displayName: "Ada Lovelace" });
+      expect(res.status).toBe(201);
+      ids.push(((await res.json()) as PersonResource).id);
+    }
+    expect(ids).toEqual(["ada-lovelace", "ada-lovelace-2", "ada-lovelace-3"]);
+  });
+
+  it("links an account once when the request names it twice", async () => {
+    const res = await create({
+      displayName: "Bob Reyes",
+      accounts: [
+        { channel: "whatsapp", channelUserId: BOB_JID },
+        { channel: "whatsapp", channelUserId: BOB_JID },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as PersonResource).accounts).toHaveLength(1);
+  });
+
+  it("answers 400 with an error body for a request nobody can act on", async () => {
+    for (const body of [
+      {},
+      { displayName: "   " },
+      { displayName: "Bob", bondLevel: "guardian" },
+      { displayName: "Bob", bondLevel: "colleague" },
+      { displayName: "Bob", accounts: [{ channel: "whatsapp" }] },
+      { displayName: "Bob", accounts: "whatsapp" },
+    ]) {
+      const res = await create(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBeTruthy();
+    }
+
+    // A body that is not JSON at all reads as a request with no name in it.
+    const malformed = await app.request("/people", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+
+    // None of the above left a row behind.
+    expect((await fetchList()).people.map((person) => person.displayName)).not.toContain("Bob");
+  });
+
+  function create(body: unknown) {
+    return app.request("/people", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function fetchPeopleRes(id: string) {
+    return app.request(`/people/${id}`);
+  }
+
+  async function fetchPerson(id: string): Promise<PersonResource> {
+    const res = await fetchPeopleRes(id);
+    expect(res.status).toBe(200);
+    return (await res.json()) as PersonResource;
+  }
+
+  async function fetchList(): Promise<PeopleList> {
+    const res = await app.request("/people");
+    expect(res.status).toBe(200);
+    return (await res.json()) as PeopleList;
+  }
+});

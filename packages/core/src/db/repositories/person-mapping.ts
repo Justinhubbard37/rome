@@ -18,6 +18,34 @@ interface ChannelClaim {
   displayName: string | null;
 }
 
+/** An account a person already holds, and the person holding it. */
+export interface AccountHolder {
+  channel: string;
+  channelUserId: string;
+  personId: string;
+  personName: string;
+}
+
+/**
+ * Thrown when a write would take an account a real person already holds.
+ *
+ * Carries the holder rather than only reporting that there is one: every
+ * caller has to name them, because the guardian decides whether to move the
+ * account and cannot decide without knowing whose it is.
+ *
+ * A dismissed account has no holder. Dismissal files an account under the
+ * stranger sentinel, which is structure rather than a person, so naming its
+ * sender releases it with nothing to refuse.
+ */
+export class AccountHeldError extends Error {
+  constructor(readonly holder: AccountHolder) {
+    super(
+      `Channel identity ${holder.channel}:${holder.channelUserId} already belongs to person "${holder.personId}"`,
+    );
+    this.name = "AccountHeldError";
+  }
+}
+
 export interface NewPersonData {
   displayName: string;
   bondLevel: "guardian" | "inner-circle" | "acquaintance" | "other";
@@ -204,11 +232,15 @@ export class PersonMappingRepository {
    *
    * An identity filed under the stranger sentinel is a dismissal rather than a
    * placement, so naming its sender releases it. An identity a real person
-   * holds stays held: this refuses instead of stealing it, because creating a
-   * person is not a re-point. The refusal is a rollback, not a partial write —
-   * a person committed without their identity would be unreachable and
-   * permanent, since {@link findByName} would then reject every retry as a
-   * duplicate of the wreckage.
+   * holds stays held: this throws {@link AccountHeldError} instead of stealing
+   * it, because creating a person is not a re-point. The refusal is a
+   * rollback, not a partial write — a person committed without their identity
+   * would be unreachable and permanent, since {@link findByName} would then
+   * reject every retry as a duplicate of the wreckage.
+   *
+   * Whatever the caller names, all of it or none of it: the identities are
+   * settled together before the transaction opens, so one held identity in a
+   * list of five leaves the other four where they were.
    */
   async create(data: {
     displayName: string;
@@ -243,9 +275,12 @@ export class PersonMappingRepository {
     for (const mapping of mappings) {
       const held = await this.findChannelMapping(mapping.channel, mapping.channelUserId);
       if (held && held.personId !== STRANGER_PERSON_ID) {
-        throw new Error(
-          `Channel identity ${mapping.channel}:${mapping.channelUserId} already belongs to person "${held.personId}"`,
-        );
+        throw new AccountHeldError({
+          channel: mapping.channel,
+          channelUserId: mapping.channelUserId,
+          personId: held.personId,
+          personName: held.personName,
+        });
       }
       claims.push({
         channel: mapping.channel,
@@ -267,15 +302,19 @@ export class PersonMappingRepository {
       .run();
   }
 
-  /** The row holding a channel identity, or null when nobody holds it. */
+  /** The row holding a channel identity and the name of the person holding it,
+   *  or null when nobody holds it. The join loses nothing — every mapping
+   *  references a person row. */
   private async findChannelMapping(channel: string, channelUserId: string) {
     const rows = await this.db
-      .select()
+      .select({ mapping: channelMappings, personName: persons.displayName })
       .from(channelMappings)
+      .innerJoin(persons, eq(channelMappings.personId, persons.id))
       .where(
         and(eq(channelMappings.channel, channel), eq(channelMappings.channelUserId, channelUserId)),
       );
-    return rows[0] ?? null;
+    const row = rows[0];
+    return row ? { ...row.mapping, personName: row.personName } : null;
   }
 
   /** Write helper for {@link createWithId}, taking an executor (see

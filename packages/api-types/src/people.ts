@@ -1,9 +1,10 @@
 // The People surface's contract, in two nouns — a person, and the accounts
 // they are reachable at:
 //
-//   GET /api/people           -> PeopleList (curated people only)
-//   GET /api/people/:id       -> PersonResource
-//   GET /api/people/:id/messages -> TimelinePage
+//   GET  /api/people              -> PeopleList (curated people only)
+//   POST /api/people              -> PersonResource (201) | LinkConflict (409)
+//   GET  /api/people/:id          -> PersonResource
+//   GET  /api/people/:id/messages -> TimelinePage
 //
 // The vocabulary is docs/concepts/identity.md's. Rome never mints an account:
 // an account is platform-owned, named by the pair (channel, channelUserId),
@@ -17,13 +18,16 @@
 // disagree about.
 
 import {
+  ASSIGNABLE_BOND_LEVELS,
   compareIdentityCursors,
   identityCursorOf,
+  isAssignableBondLevel,
   matchesQuery,
   normalizeBondLevel,
   parseFilterLevel,
   TIMELINE_PAGE_DEFAULT_LIMIT,
   TIMELINE_PAGE_MAX_LIMIT,
+  type AssignableBondLevel,
   type IdentityDynamic,
   type PlacedBondLevel,
 } from "./identities.js";
@@ -40,6 +44,11 @@ export {
   // column is free text — older rows carry levels off today's ladder — so
   // every reader has to bucket them the same way.
   normalizeBondLevel,
+  // The levels a guardian may place a person at. Guardian is not one of them:
+  // the instance serves exactly one, and the ladder's other two positions —
+  // unknown and stranger — are read off the links rather than stored.
+  ASSIGNABLE_BOND_LEVELS,
+  type AssignableBondLevel,
   type IdentityDynamic,
   type TimelineEntry,
   type TimelinePage,
@@ -200,4 +209,103 @@ export function personMatchesQuery(person: PersonResource, query: string): boole
  */
 export function comparePeople(a: PersonResource, b: PersonResource): number {
   return compareIdentityCursors(identityCursorOf(a), identityCursorOf(b));
+}
+
+/**
+ * `POST /api/people` — the guardian names someone, and says which accounts are
+ * theirs.
+ *
+ * Creating and linking are one request because they are one decision. Split in
+ * two, a client that creates and then fails to link leaves a person nobody can
+ * reach: no inbound message resolves to them, and the name is now taken, so the
+ * retry reads as a duplicate rather than a repair.
+ */
+export interface CreatePersonRequest {
+  displayName: string;
+  /** Defaults to "other". */
+  bondLevel?: AssignableBondLevel;
+  /** Every account named here is linked, or none is and no person is created. */
+  accounts?: AccountRef[];
+}
+
+/** A create request with its defaults applied: what the write is given. */
+export type NewPerson = Required<CreatePersonRequest>;
+
+/**
+ * Read a request body as a {@link NewPerson}, or say what is wrong with it.
+ *
+ * The rule rather than the route's rule, so the backend and the dashboard's
+ * mock refuse the same bodies with the same words — the page renders the
+ * `error` string, so the wording is part of what a client is written against.
+ *
+ * A name is trimmed before it is judged, and whitespace alone is no name: it
+ * slugs to nothing, so accepting it would mint a person whose id is a uuid the
+ * guardian never sees a reason for.
+ */
+export function parseCreatePersonRequest(body: unknown): { person: NewPerson } | { error: string } {
+  if (typeof body !== "object" || body === null) return { error: "displayName is required" };
+  const raw = body as Record<string, unknown>;
+
+  const displayName = typeof raw.displayName === "string" ? raw.displayName.trim() : "";
+  if (!displayName) return { error: "displayName is required" };
+
+  if (raw.bondLevel !== undefined && !isAssignableBondLevel(raw.bondLevel)) {
+    return { error: `bondLevel must be one of ${ASSIGNABLE_BOND_LEVELS.join(", ")}` };
+  }
+
+  if (raw.accounts !== undefined && !Array.isArray(raw.accounts)) {
+    return { error: "accounts must be an array of { channel, channelUserId }" };
+  }
+  // Keyed rather than pushed: naming one account twice asks for the state
+  // naming it once produces, and the link table holds one row per account, so
+  // the repeat would abort the write over a request that was never ambiguous.
+  const accounts = new Map<string, AccountRef>();
+  for (const entry of (raw.accounts ?? []) as unknown[]) {
+    const account = entry as Partial<AccountRef> | null;
+    if (!account?.channel || !account.channelUserId) {
+      return { error: "each account needs a channel and a channelUserId" };
+    }
+    const ref = { channel: account.channel, channelUserId: account.channelUserId };
+    accounts.set(`${ref.channel}\n${ref.channelUserId}`, ref);
+  }
+
+  return {
+    person: { displayName, bondLevel: raw.bondLevel ?? "other", accounts: [...accounts.values()] },
+  };
+}
+
+/**
+ * The 409 body for a link Rome refuses because a person already holds the
+ * account.
+ *
+ * It names the holder so the client can say whose the account is and offer the
+ * transfer, which is a separate decision the guardian has to make: linking an
+ * account re-attributes its whole history, so it never happens as the silent
+ * winner of two requests.
+ *
+ * A dismissed account is not held. Dismissal files an account under the
+ * stranger sentinel, which is structure rather than a person, so naming its
+ * sender takes it back with no conflict to report.
+ */
+export interface LinkConflict {
+  error: string;
+  channel: string;
+  channelUserId: string;
+  linkedPersonId: string;
+  linkedPersonName: string;
+}
+
+/** Phrase a {@link LinkConflict}, wording included, so every route and the
+ *  mock refuse in the same words. */
+export function linkConflict(
+  account: AccountRef,
+  holder: { id: string; displayName: string },
+): LinkConflict {
+  return {
+    error: `${account.channel}:${account.channelUserId} is already linked to ${holder.displayName}`,
+    channel: account.channel,
+    channelUserId: account.channelUserId,
+    linkedPersonId: holder.id,
+    linkedPersonName: holder.displayName,
+  };
 }

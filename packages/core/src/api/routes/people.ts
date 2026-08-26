@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import {
   comparePeople,
   countPeople,
+  parseCreatePersonRequest,
   parsePersonFilterLevel,
   parseTimelineCursor,
   personMatchesLevel,
@@ -9,16 +10,18 @@ import {
   timelinePageLimit,
   type PeopleList,
 } from "@rome/api-types/people";
+import { createPerson } from "../../people/create.js";
 import { findPerson, readPeople, readPerson } from "../../people/resource.js";
 import { readPersonTimeline } from "../../people/timeline.js";
 import { personTimelineSources, timelineAccounts } from "../../people/timeline-sources.js";
 import type { ApiDeps } from "../deps.js";
 
-// The People surface's reads. What a person and their accounts are, how the
-// listing orders and counts, and what a page of history is are the contract's
-// (@rome/api-types/people); serializing a person is `src/people/resource.ts`;
-// which stores a history is merged from is the rest of `src/people/`. These
-// handlers parse query parameters and hold no rule of their own.
+// The People surface. What a person and their accounts are, how the listing
+// orders and counts, what a valid create is and what a refused link answers
+// are the contract's (@rome/api-types/people); serializing a person is
+// `src/people/resource.ts`, creating one is `src/people/create.ts`, and which
+// stores a history is merged from is the rest of `src/people/`. These handlers
+// read the request and pick a status code, and hold no rule of their own.
 
 export function peopleRoutes(deps: ApiDeps): Hono {
   const app = new Hono();
@@ -43,6 +46,17 @@ export function peopleRoutes(deps: ApiDeps): Hono {
         .sort(comparePeople),
       counts: countPeople(matching),
     } satisfies PeopleList);
+  });
+
+  app.post("/people", async (c) => {
+    const parsed = parseCreatePersonRequest(await c.req.json().catch(() => null));
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+    const created = await createPerson(deps, parsed.person);
+    // 409 rather than 400: the body is well formed and the guardian may well
+    // have meant it. A held account is a fact about Rome's state, which a
+    // transfer can change, rather than a mistake in the request.
+    return "conflict" in created ? c.json(created.conflict, 409) : c.json(created.person, 201);
   });
 
   app.get("/people/:id", async (c) => {

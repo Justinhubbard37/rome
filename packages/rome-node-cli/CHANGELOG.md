@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.7](https://github.com/Justinhubbard37/rome/compare/node-v0.1.6...node-v0.1.7) (2026-11-01)
+
+
+### Features
+
+* let a new chat work in a folder on a connected device ([#1267](https://github.com/Justinhubbard37/rome/issues/1267)) ([c327426](https://github.com/Justinhubbard37/rome/commit/c3274267262499ebb2a8a9354b962e74c6a00c36))
+* **node:** record daemon activity and show it in Settings → Devices ([#1032](https://github.com/Justinhubbard37/rome/issues/1032)) ([c3e6a8f](https://github.com/Justinhubbard37/rome/commit/c3e6a8f7f0c79de276fa43acfabb511b75dfc62c))
+* **node:** rename and remove devices from the Devices page ([#1286](https://github.com/Justinhubbard37/rome/issues/1286)) ([bb3385f](https://github.com/Justinhubbard37/rome/commit/bb3385fe2ba53c6ca353973af0c65e5fcf1a8470))
+* **node:** send raw bytes between devices and add rome-node cp ([#821](https://github.com/Justinhubbard37/rome/issues/821)) ([617a42a](https://github.com/Justinhubbard37/rome/commit/617a42abd95dab06e7600ae4e7638dcdb27c5a8c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @rome-os/node-core bumped to 0.1.6
+
 ## [0.1.6](https://github.com/rome-os/rome/compare/node-v0.1.5...node-v0.1.6) (2026-10-23)
 
 

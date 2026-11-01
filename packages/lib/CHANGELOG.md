@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/Justinhubbard37/rome/compare/libs-v0.0.3...libs-v0.0.4) (2026-11-01)
+
+
+### Features
+
+* **desktop:** open a hosted Rome from Rome Cloud ([#1120](https://github.com/Justinhubbard37/rome/issues/1120)) ([91d7a46](https://github.com/Justinhubbard37/rome/commit/91d7a46d81b8a94822991d49b909632fae414fb6))
+
 ## [0.0.3](https://github.com/rome-os/rome/compare/libs-v0.0.2...libs-v0.0.3) (2026-10-19)
 
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.8](https://github.com/Justinhubbard37/rome/compare/app-web-sdk-v0.3.7...app-web-sdk-v0.3.8) (2026-11-01)
+
+
+### Bug Fixes
+
+* **app-web-sdk:** show non-JSON login errors and drop duplicated CLI and runtime code ([#853](https://github.com/Justinhubbard37/rome/issues/853)) ([1c46dcc](https://github.com/Justinhubbard37/rome/commit/1c46dcc0017920e8c1da454294ab22d04d299d83))
+* **app-web-sdk:** stop double-decoding app paths and show non-JSON CLI errors ([#846](https://github.com/Justinhubbard37/rome/issues/846)) ([2b36e88](https://github.com/Justinhubbard37/rome/commit/2b36e886ff62b54fec19e0b0e3274370eb5a116b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * peerDependencies
+    * @rome-os/ui bumped from ^0.3.0 to ^0.3.8
+
 ## [0.3.7](https://github.com/rome-os/rome/compare/app-web-sdk-v0.3.6...app-web-sdk-v0.3.7) (2026-10-11)
 
 

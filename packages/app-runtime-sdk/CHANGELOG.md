@@ -1,5 +1,48 @@
 # @rome-os/app-runtime
 
+## [0.10.0](https://github.com/Justinhubbard37/rome/compare/app-runtime-v0.9.5...app-runtime-v0.10.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **app-runtime:** add restricted connection access
+* **app-runtime:** name the chat id chatId on refs, messages, queries and receipts ([#1206](https://github.com/Justinhubbard37/rome/issues/1206))
+* **app-runtime:** retire the Talk names and the multi-Connection channel options ([#772](https://github.com/Justinhubbard37/rome/issues/772))
+
+### Features
+
+* **app-runtime:** add restricted connection access ([d90d3e4](https://github.com/Justinhubbard37/rome/commit/d90d3e4f7a007d96ae172200bda270d5d9f58e51))
+* **app-runtime:** answer as an account's linked agent, and keep an unlinked account silent ([#1101](https://github.com/Justinhubbard37/rome/issues/1101)) ([bae6b6f](https://github.com/Justinhubbard37/rome/commit/bae6b6fb1389c05a53611736747151875fffbc03))
+* **app-runtime:** deprecate ChannelsService.history in favour of query ([#763](https://github.com/Justinhubbard37/rome/issues/763)) ([6667901](https://github.com/Justinhubbard37/rome/commit/6667901cfe6e535eb656ddfe7140f1c461dcf608))
+* **app-runtime:** name a channel's platform, and send to any account by its id ([#1203](https://github.com/Justinhubbard37/rome/issues/1203)) ([52f84af](https://github.com/Justinhubbard37/rome/commit/52f84af097ee9aace8a2bdccfdbe978f47dab0a7))
+* **app-runtime:** name a chat's connection kind, and say connection kind across core ([#1214](https://github.com/Justinhubbard37/rome/issues/1214)) ([a533d3a](https://github.com/Justinhubbard37/rome/commit/a533d3a534f55112a6609bf73bdd39f51578b512))
+* **app-runtime:** name accounts in person mapping and sentinel entries ([#1472](https://github.com/Justinhubbard37/rome/issues/1472)) ([20afa03](https://github.com/Justinhubbard37/rome/commit/20afa039f68d3ced3e4541d72fa6c8caf1d68421))
+* **app-runtime:** name chat services chatSettings and chats, keep old names as deprecated aliases ([#1194](https://github.com/Justinhubbard37/rome/issues/1194)) ([c585a25](https://github.com/Justinhubbard37/rome/commit/c585a25e3f55382b4a51bdc8d6a953ba589a1eb2))
+* **app-runtime:** name chat types Chat, keep Conversation names as deprecated aliases ([#1189](https://github.com/Justinhubbard37/rome/issues/1189)) ([3766b63](https://github.com/Justinhubbard37/rome/commit/3766b63e12f8c1c0e93ebfde3d5b01d8cd353e70))
+* **app-runtime:** name Rome's accounts by platform and id ([#1415](https://github.com/Justinhubbard37/rome/issues/1415)) ([65c7e1a](https://github.com/Justinhubbard37/rome/commit/65c7e1a2d8ef998bdd99ba7fe05a73ca9dde81d9))
+* **app-runtime:** name the channel ports in channel vocabulary, deprecate the Talk names ([#750](https://github.com/Justinhubbard37/rome/issues/750)) ([46808bb](https://github.com/Justinhubbard37/rome/commit/46808bba8efe194b0c347cf6007ba5750ab086ca))
+* **app-runtime:** name the chat id chatId on refs, messages, queries and receipts ([#1206](https://github.com/Justinhubbard37/rome/issues/1206)) ([c42b46b](https://github.com/Justinhubbard37/rome/commit/c42b46baed7780f12141aaa16a838ac28e9e50be))
+* **app-runtime:** resolve Rome credit funding ([#648](https://github.com/Justinhubbard37/rome/issues/648)) ([40552fb](https://github.com/Justinhubbard37/rome/commit/40552fbdc5055a4393fcb8936c02e2425f17fa39))
+* **app-runtime:** retire the Talk names and the multi-Connection channel options ([#772](https://github.com/Justinhubbard37/rome/issues/772)) ([f3a3661](https://github.com/Justinhubbard37/rome/commit/f3a3661e0945f32d0f9530c94207939305e4b03f))
+* **app-runtime:** say account and agent, not linked agent, bot or channel ([#1157](https://github.com/Justinhubbard37/rome/issues/1157)) ([e5f9464](https://github.com/Justinhubbard37/rome/commit/e5f94640c7c206c0296da76295fe4aa03e4ab30c))
+* **app-runtime:** stream a guardian's Telegram reply as the agent writes it ([#1145](https://github.com/Justinhubbard37/rome/issues/1145)) ([b2bc593](https://github.com/Justinhubbard37/rome/commit/b2bc5937569b5c5ab986743faf406e3fa1464201))
+* **chat:** close the composer while a card is the only way to answer ([#1275](https://github.com/Justinhubbard37/rome/issues/1275)) ([dbd1fea](https://github.com/Justinhubbard37/rome/commit/dbd1feae47b3196286cc4f6831c89694b9a1c518))
+* **chats:** record every inbound message before the wake decides ([#1502](https://github.com/Justinhubbard37/rome/issues/1502)) ([4a91a0c](https://github.com/Justinhubbard37/rome/commit/4a91a0c865955af009c1831d4c338f2eefeb3c51))
+* **connector:** add Shopify and Otter.ai to the connectable toolkits ([#1169](https://github.com/Justinhubbard37/rome/issues/1169)) ([0441336](https://github.com/Justinhubbard37/rome/commit/0441336425f019158603908cf66000230e040b76))
+* **core:** add another account of a service ([#1067](https://github.com/Justinhubbard37/rome/issues/1067)) ([01e41c6](https://github.com/Justinhubbard37/rome/commit/01e41c62774f6447227f40010f5139fc20cf46d6))
+* **core:** key People links by platform ([#1459](https://github.com/Justinhubbard37/rome/issues/1459)) ([93401a8](https://github.com/Justinhubbard37/rome/commit/93401a8cb659d4d75d8889b1929d3abb7090298a))
+* **core:** let an open chat change its model and tell a new thread what it missed ([#1377](https://github.com/Justinhubbard37/rome/issues/1377)) ([b278aa9](https://github.com/Justinhubbard37/rome/commit/b278aa9839379619f0bc2ab76feb5c110bcd87c0))
+* **core:** let defer wake a session when an event arrives ([#1285](https://github.com/Justinhubbard37/rome/issues/1285)) ([174a3bc](https://github.com/Justinhubbard37/rome/commit/174a3bc519d7ada7095c4667bde6970072f72362))
+* **core:** subscribe to an event's source when defer waits on it ([#1315](https://github.com/Justinhubbard37/rome/issues/1315)) ([55cfac3](https://github.com/Justinhubbard37/rome/commit/55cfac3eb4155b4826f3078f9aa9a820258b41f3))
+* let a new chat work in a folder on a connected device ([#1267](https://github.com/Justinhubbard37/rome/issues/1267)) ([c327426](https://github.com/Justinhubbard37/rome/commit/c3274267262499ebb2a8a9354b962e74c6a00c36))
+* **routines:** auto-enable a routine the guardian explicitly asked for ([#872](https://github.com/Justinhubbard37/rome/issues/872)) ([f52d3a5](https://github.com/Justinhubbard37/rome/commit/f52d3a506da17596dd6103ed88c9d9993d5734ac))
+* **web:** link saved routine cards to their run history ([#870](https://github.com/Justinhubbard37/rome/issues/870)) ([79c7990](https://github.com/Justinhubbard37/rome/commit/79c7990b6e6c03122e16c9572a30cd1e8d08eefd))
+
+
+### Bug Fixes
+
+* **app-runtime:** type favor consent results as always carrying their request ([#894](https://github.com/Justinhubbard37/rome/issues/894)) ([e8c97fe](https://github.com/Justinhubbard37/rome/commit/e8c97feba4ad9409e610e17d60a6d1e7b8bf86d7))
+
 ## [0.9.5](https://github.com/rome-os/rome/compare/app-runtime-v0.9.4...app-runtime-v0.9.5) (2026-10-29)
 
 

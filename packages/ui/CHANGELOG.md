@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.8](https://github.com/Justinhubbard37/rome/compare/ui-v0.3.7...ui-v0.3.8) (2026-11-01)
+
+
+### Features
+
+* **ui:** render Mermaid diagrams with Pele ([#1201](https://github.com/Justinhubbard37/rome/issues/1201)) ([ef4f645](https://github.com/Justinhubbard37/rome/commit/ef4f6458016f0e0aaf84010b7233d88aecad2316))
+
+
+### Bug Fixes
+
+* **ui:** apply interface-polish rules to the component kit ([#820](https://github.com/Justinhubbard37/rome/issues/820)) ([765a989](https://github.com/Justinhubbard37/rome/commit/765a98963e1174a705c043baa7d560b6c18a3752))
+* **ui:** end bare URLs at CJK punctuation ([#1556](https://github.com/Justinhubbard37/rome/issues/1556)) ([e8eec9f](https://github.com/Justinhubbard37/rome/commit/e8eec9f03b6bfac96416bf6b6ff7589977b11050))
+* **ui:** give fenced-block chrome its own row where hover does not exist ([#926](https://github.com/Justinhubbard37/rome/issues/926)) ([488722b](https://github.com/Justinhubbard37/rome/commit/488722b496dbd6933acce2b3a5f454cfb79979bd))
+* **ui:** keep Markdown table columns readable on narrow screens ([#782](https://github.com/Justinhubbard37/rome/issues/782)) ([af34f20](https://github.com/Justinhubbard37/rome/commit/af34f206994928e94c5a08836b93cc0aefb22315))
+* **ui:** let Dialog and Sheet content scroll inside an app's shadow root ([#777](https://github.com/Justinhubbard37/rome/issues/777)) ([1367eb1](https://github.com/Justinhubbard37/rome/commit/1367eb171e06512f70839566f935590f6acbb8af))
+* **ui:** optically center Button glyphs against their labels ([#823](https://github.com/Justinhubbard37/rome/issues/823)) ([c202693](https://github.com/Justinhubbard37/rome/commit/c2026939301b6ade4b79aa21ad0e90c584bbdfd7))
+* **ui:** show a chevron on clipped ends of scrolling PageNav and FilterChipGroup rows ([#748](https://github.com/Justinhubbard37/rome/issues/748)) ([16aa640](https://github.com/Justinhubbard37/rome/commit/16aa6404db5be16f5dbc0029c33da7bfa4db5cb9))
+
+
+### Performance Improvements
+
+* page chat history by turn and trim chat-open requests ([#1468](https://github.com/Justinhubbard37/rome/issues/1468)) ([3f3ae7a](https://github.com/Justinhubbard37/rome/commit/3f3ae7a8d45e7006510ab2e508d9e8ee81a08455))
+* **ui:** load the mermaid, KaTeX and Shiki plugins only when a message needs them ([#794](https://github.com/Justinhubbard37/rome/issues/794)) ([772fda4](https://github.com/Justinhubbard37/rome/commit/772fda469f39f4bbce5257c1f0cfd5178a934123))
+* **web:** stop re-rendering whole transcripts, the chat and the sidebar on every update ([#1548](https://github.com/Justinhubbard37/rome/issues/1548)) ([d3b7a58](https://github.com/Justinhubbard37/rome/commit/d3b7a5828269dcbb4809c58edfff6be0a53ac0bc))
+
 ## [0.3.7](https://github.com/rome-os/rome/compare/ui-v0.3.6...ui-v0.3.7) (2026-10-27)
 
 
